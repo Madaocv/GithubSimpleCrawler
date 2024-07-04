@@ -1,0 +1,29 @@
+{
+    "type": "array",
+    "items": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "extra": {
+          "type": "object",
+          "properties": {
+            "owner": {
+              "type": "string"
+            },
+            "language_stats": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            }
+          },
+          "required": ["owner"]
+        }
+      },
+      "required": ["url", "extra"]
+    }
+  }
+  
