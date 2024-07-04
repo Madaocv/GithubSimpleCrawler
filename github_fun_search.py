@@ -1,13 +1,11 @@
-import os
 import requests
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from lxml import html
 import time
 import random
 import json
 from jsonschema import validate
+import argparse
 
 http = requests.Session()
 headers = {
@@ -65,24 +63,24 @@ def fetch_with_retries(url, proxies_list, retries=15, backoff_factor=2):
             response = http.get(url, proxies=proxy_url, headers=headers, timeout=5)
             response.raise_for_status()
             print(proxy_url)
-            return response
+            return response, proxy_url
         except Exception as e:
             print("*" * 50)
             print(f"Attempt {attempt + 1} failed: {e}")
             print(proxy_url)
             print("*" * 50)
-            time.sleep(backoff_factor)  # Фіксований час між спробами
-    return None
+            time.sleep(backoff_factor)
+    return None, None
 
 
-def get_details(url):
+def get_details(url, proxy_url):
     print("Getting details from URL: " + url)
     prefix = 'https://github.com/'
     url_without_prefix = url[len(prefix):]
     path_parts = url_without_prefix.split('/')
     username = path_parts[0]
 
-    detail_response = http.get(url, headers=headers)
+    detail_response = http.get(url, proxies=proxy_url, headers=headers)
     soup = BeautifulSoup(detail_response.text, 'html.parser')
     language_stats = {}
     try:
@@ -101,9 +99,10 @@ def get_details(url):
         "url": url,
         "extra": {
             "owner": username,
-            "language_stats": language_stats
         }
     }
+    if language_stats:
+        out_dict["extra"]["language_stats"] = language_stats
     return out_dict
 
 
@@ -122,25 +121,29 @@ def load_schema(schema_path):
     return schema
 
 
-def main(keywords=None):
-    git_main_page_url = f"https://github.com/search?q={'+'.join(keywords)}&type=repositories"
-    print(git_main_page_url)
+def main(inputkeywords=None, search_type='Repositories'):
+    git_main_page_url = f"https://github.com/search?q={'+'.join(inputkeywords)}&type={search_type.lower()}"
+    print('Main page: ', git_main_page_url)
     proxies_list = parse_proxy_with_lxml()
     dict_list_proxies = [convert_to_dict(row) for row in proxies_list]
-    response = fetch_with_retries(git_main_page_url, dict_list_proxies)
+    response, successful_proxy = fetch_with_retries(git_main_page_url, dict_list_proxies)
     output_file = []
     if response:
-        print(response.status_code)
+        print('Main page response.status_code: ', response.status_code)
         soup = BeautifulSoup(response.text, 'html.parser')
         for obj in soup.find("div", {"data-testid": "results-list"}).find_all("h3"):
             detail_url = f'https://github.com{obj.a.get("href")}'
-            output_file.append(get_details(detail_url))
+            output_file.append(get_details(detail_url, successful_proxy))
     else:
         print("Failed to fetch the URL.")
     validate(instance=output_file, schema=load_schema("schema.json"))
-    with open(f'outputfile_{"_".join(keywords)}.json', 'w') as file:
+    with open(f'outputfile_{"_".join(inputkeywords)}.json', 'w') as file:
         file.write(json.dumps(output_file, indent=4))
 
 
 if __name__ == "__main__":
-    main(keywords=["пайтон"])
+    parser = argparse.ArgumentParser(description='GitHub Crawler')
+    parser.add_argument('keywords', type=str, nargs='+', help='Search keywords')
+    parser.add_argument('--type', type=str, default='Repositories', help='The type of object to search for (Wiki, Issues, Repositories)')
+    args = parser.parse_args()
+    main(inputkeywords=args.keywords, search_type=args.type)
