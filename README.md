@@ -54,3 +54,5 @@ Based on keywords the results will be stored on file "outputfile_python_django-r
 ![Coverage report](img/test.png)
 *Coverage report*
 
+![Results example](img/results.png)
+*Results example*
