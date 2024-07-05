@@ -40,7 +40,7 @@ pip install -r requirements.txt
 
 4. **Execute script**:
 ```sh
-python github_fun_search.py python django-rest-framework jwt --type=Repositories
+python github_fun_search.py --proxy=http://50.223.239.165:80 --filename=output_file
 ```
 
 5. **Execute test**:

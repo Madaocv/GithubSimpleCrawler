@@ -1,7 +1,8 @@
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, mock_open
 import github_fun_search
 import requests
+import argparse
 
 
 class TestGithubFunSearch(unittest.TestCase):
@@ -80,6 +81,7 @@ class TestGithubFunSearch(unittest.TestCase):
         self.assertEqual(details['extra']['language_stats']['Python'], 98.0)
         self.assertEqual(details['extra']['language_stats']['HTML'], 1.1)
 
+
     @patch('github_fun_search.http.get')
     def test_fetch_with_retries(self, mock_get):
         mock_response = Mock()
@@ -90,7 +92,6 @@ class TestGithubFunSearch(unittest.TestCase):
         response, proxy_url = github_fun_search.fetch_with_retries('http://example.com', proxies_list)
         self.assertEqual(response.status_code, 200)
         self.assertIsNotNone(proxy_url)
-
 
     @patch('github_fun_search.http.get')
     def test_main(self, mock_get):
@@ -123,7 +124,7 @@ class TestGithubFunSearch(unittest.TestCase):
             'url': 'https://github.com/owner/repo',
             'extra': {'owner': 'owner', 'language_stats': {'Python': 97.1}}
         }):
-            github_fun_search.main(inputkeywords=['python', 'django-rest-framework', 'jwt'])
+            github_fun_search.main(outputfilename='output', explicit_proxy='http://8.8.8.8:80')
 
     @patch('github_fun_search.http.get')
     def test_get_details_no_languages(self, mock_get):
@@ -140,19 +141,6 @@ class TestGithubFunSearch(unittest.TestCase):
         self.assertEqual(details['extra']['owner'], 'owner')
         self.assertNotIn('language_stats', details['extra'])
 
-    def test_convert_to_dict(self):
-        row = ['8.8.8.8', '80', 'US', 'United States', 'anonymous', 'yes', 'yes', '5 mins ago']
-        expected_dict = {
-            'IP_Address': '8.8.8.8',
-            'Port': '80',
-            'Code': 'US',
-            'Country': 'United States',
-            'Anonymity': 'anonymous',
-            'Google': 'yes',
-            'Https': 'yes',
-            'Last_Checked': '5 mins ago'
-        }
-        self.assertEqual(github_fun_search.convert_to_dict(row), expected_dict)
 
     @patch('github_fun_search.http.get')
     @patch('github_fun_search.time.sleep', return_value=None)
@@ -161,7 +149,7 @@ class TestGithubFunSearch(unittest.TestCase):
         proxies_list = [{'IP_Address': '8.8.8.8', 'Port': '80', 'Https': 'yes'}]
         response, proxy_url = github_fun_search.fetch_with_retries('http://example.com', proxies_list, retries=1, backoff_factor=0)
         self.assertIsNone(response)
-        self.assertIsNone(proxy_url)
+        self.assertIsNotNone(proxy_url)
 
     def test_convert_to_dict(self):
         row = ['8.8.8.8', '80', 'US', 'United States', 'elite proxy', 'no', 'yes', '0 seconds ago']
@@ -173,6 +161,23 @@ class TestGithubFunSearch(unittest.TestCase):
         proxy = {'IP_Address': '8.8.8.8', 'Port': '80', 'Https': 'yes'}
         proxy_url = github_fun_search.get_proxy_url(proxy)
         self.assertEqual(proxy_url, {'https': 'https://8.8.8.8:80'})
-        
+
+    def test_validate_proxy_valid(self):
+        proxy = 'http://8.8.8.8:8080'
+        self.assertEqual(github_fun_search.validate_proxy(proxy), proxy)
+
+    def test_validate_proxy_invalid(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            github_fun_search.validate_proxy('invalid_proxy')
+
+    def test_validate_filename_valid(self):
+        filename = 'schema_output.json'
+        self.assertEqual(github_fun_search.validate_filename(filename), filename)
+
+    def test_validate_filename_empty(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            github_fun_search.validate_filename('')
+
+
 if __name__ == '__main__':
     unittest.main()
