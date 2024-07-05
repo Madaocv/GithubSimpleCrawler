@@ -1,11 +1,20 @@
 import requests
 from bs4 import BeautifulSoup
 from lxml import html
-import time
 import random
 import json
+import time
+import re
 from jsonschema import validate
 import argparse
+import sys
+import traceback
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 http = requests.Session()
 headers = {
@@ -24,6 +33,19 @@ headers = {
 }
 
 
+def validate_proxy(proxy):
+    proxy_pattern = re.compile(r'^(http|https)://\d+\.\d+\.\d+\.\d+:\d+$')
+    if not proxy_pattern.match(proxy):
+        raise argparse.ArgumentTypeError(f"Invalid proxy format: {proxy}")
+    return proxy
+
+
+def validate_filename(filename):
+    if not filename:
+        raise argparse.ArgumentTypeError("Filename cannot be empty")
+    return filename
+
+
 def convert_to_dict(row):
     keys = ['IP_Address', 'Port', 'Code', 'Country', 'Anonymity', 'Google', 'Https', 'Last_Checked']
     return dict(zip(keys, row))
@@ -32,6 +54,12 @@ def convert_to_dict(row):
 def get_proxy_url(proxy):
     protocol = "http" if proxy['Https'] == 'no' else "https"
     return {protocol: f"{protocol}://{proxy['IP_Address']}:{proxy['Port']}"}
+
+
+def get_proxy_url_string(proxy_url):
+    protocol, address = proxy_url.split("://")
+    ip_address, port = address.split(":")
+    return {protocol: f"{protocol}://{ip_address}:{port}"}
 
 
 def parse_proxy_with_lxml():
@@ -50,31 +78,36 @@ def parse_proxy_with_lxml():
 def get_random_proxy(proxies_list):
     proxy = random.choice(proxies_list)
     proxy_url = f"http://{proxy['IP_Address']}:{proxy['Port']}"
-    if proxy['Https'] == 'yes':
+    if proxy.get('Https', '') == 'yes':
         return {'http': proxy_url, 'https': proxy_url}
     else:
         return {'http': proxy_url}
 
 
-def fetch_with_retries(url, proxies_list, retries=15, backoff_factor=2):
+def fetch_with_retries(url, proxies_list, retries=15, backoff_factor=2, explicit_proxy=None):
     for attempt in range(retries):
-        proxy_url = get_random_proxy(proxies_list)
+        proxy_url = get_proxy_url_string(explicit_proxy) if explicit_proxy else get_random_proxy(proxies_list)
         try:
             response = http.get(url, proxies=proxy_url, headers=headers, timeout=5)
             response.raise_for_status()
-            print(proxy_url)
+            logger.info(f"Selected proxy: {proxy_url}")
             return response, proxy_url
-        except Exception as e:
-            print("*" * 50)
-            print(f"Attempt {attempt + 1} failed: {e}")
-            print(proxy_url)
-            print("*" * 50)
-            time.sleep(backoff_factor)
-    return None, None
+        except requests.exceptions.RequestException:
+            ex_type, ex_value, ex_traceback = sys.exc_info()
+            trace_back = traceback.extract_tb(ex_traceback)
+            stack_trace = list()
+            for trace in trace_back:
+                stack_trace.append(f"File : {trace[0]} , Line : {trace[1]}, Func.Name : {trace[2]}, Message : {trace[3]}" )
+            logger.error(f"Exception type : {ex_type.__name__}")
+            logger.error(f"Exception message : {ex_value}")
+            logger.error(f"Stack trace : {stack_trace}")
+            logger.error(f"Proxy :{proxy_url}")
+        time.sleep(backoff_factor)
+    return None, proxy_url
 
 
 def get_details(url, proxy_url):
-    print("Getting details from URL: " + url)
+    logger.info(f"Getting details from URL: {url}" )
     prefix = 'https://github.com/'
     url_without_prefix = url[len(prefix):]
     path_parts = url_without_prefix.split('/')
@@ -92,8 +125,16 @@ def get_details(url, proxy_url):
             language_name = lang.find('span', attrs={'class': True}).text.strip()
             percentage = lang.find('span', attrs={'class': False}).text.strip()
             language_stats.update({language_name: float(percentage.replace('%', ''))})
-    except Exception as e:
-        print(f"Can not detect Languages: {str(e)}")
+    except AttributeError as e:
+        ex_type, ex_value, ex_traceback = sys.exc_info()
+        trace_back = traceback.extract_tb(ex_traceback)
+        stack_trace = list()
+        for trace in trace_back:
+            stack_trace.append(f"File : {trace[0]} , Line : {trace[1]}, Func.Name : {trace[2]}, Message : {trace[3]}" )
+        logger.error(f"Exception type : {ex_type.__name__}")
+        logger.error(f"Exception message : {ex_value}")
+        logger.error(f"Stack trace : {stack_trace}")
+        logger.error(f"Can not detect Languages: {str(e)}")
 
     out_dict = {
         "url": url,
@@ -117,33 +158,47 @@ def load_schema(schema_path):
         with open(schema_path) as schema_file:
             schema = json.load(schema_file)
     except ValueError as e:
-        print('Invalid JSON in schema or included schema: {}\n{}'.format(schema_file.name, str(e)))
+        logger.error('Invalid JSON in schema or included schema: {}\n{}'.format(schema_file.name, str(e)))
     return schema
 
 
-def main(inputkeywords=None, search_type='Repositories'):
-    git_main_page_url = f"https://github.com/search?q={'+'.join(inputkeywords)}&type={search_type.lower()}"
-    print('Main page: ', git_main_page_url)
+def main(outputfilename=None, explicit_proxy=None):
+    with open("inputfile.json") as json_file:
+        json_data_inputfile = json.load(json_file)
+    validate(instance=json_data_inputfile, schema=load_schema("shema_input.json"))
+    git_main_page_url = f"https://github.com/search?q={'+'.join(json_data_inputfile['keywords'])}&type={json_data_inputfile['type'].lower()}"
+    logger.info(f'Main page: {git_main_page_url}')
     proxies_list = parse_proxy_with_lxml()
     dict_list_proxies = [convert_to_dict(row) for row in proxies_list]
-    response, successful_proxy = fetch_with_retries(git_main_page_url, dict_list_proxies)
+    dict_list_proxies.extend([{'IP_Address': obj.split(':')[0], 'Port': obj.split(':')[1]} for obj in json_data_inputfile['proxies']])
+    response, successful_proxy = fetch_with_retries(git_main_page_url, dict_list_proxies, explicit_proxy=explicit_proxy)
     output_file = []
     if response:
-        print('Main page response.status_code: ', response.status_code)
+        logger.info(f'Main page response.status_code: {response.status_code}')
         soup = BeautifulSoup(response.text, 'html.parser')
-        for obj in soup.find("div", {"data-testid": "results-list"}).find_all("h3"):
-            detail_url = f'https://github.com{obj.a.get("href")}'
-            output_file.append(get_details(detail_url, successful_proxy))
+        detail_urls = [f'https://github.com{obj.a.get("href")}' for obj in soup.find("div", {"data-testid": "results-list"}).find_all("h3")]
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(get_details, url, successful_proxy) for url in detail_urls]
+            for future in as_completed(futures):
+                output_file.append(future.result())
+
+        validate(instance=output_file, schema=load_schema("schema_output.json"))
+        if not outputfilename:
+            outputfilename = "_".join(json_data_inputfile.get('keywords', 'Where is the keywords?'))
+        with open(f'{outputfilename}.json', 'w') as file:
+            file.write(json.dumps(output_file, indent=4))
     else:
-        print("Failed to fetch the URL.")
-    validate(instance=output_file, schema=load_schema("schema.json"))
-    with open(f'outputfile_{"_".join(inputkeywords)}.json', 'w') as file:
-        file.write(json.dumps(output_file, indent=4))
+        logger.error("Failed to fetch the URL.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='GitHub Crawler')
-    parser.add_argument('keywords', type=str, nargs='+', help='Search keywords')
-    parser.add_argument('--type', type=str, default='Repositories', help='The type of object to search for (Wiki, Issues, Repositories)')
+    parser.add_argument('--proxy', type=validate_proxy, help='Proxy to use for requests')
+    parser.add_argument('--filename', type=validate_filename, help='Filename for output')
     args = parser.parse_args()
-    main(inputkeywords=args.keywords, search_type=args.type)
+    try:
+        main(outputfilename=args.filename, explicit_proxy=args.proxy)
+    except argparse.ArgumentTypeError as e:
+        logger.error(e)
+        sys.exit(1)
